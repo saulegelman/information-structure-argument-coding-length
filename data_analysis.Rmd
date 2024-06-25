@@ -1,0 +1,350 @@
+---
+title: "Impact of information structure on clause length"
+subtitle: "Data processing and analysis"
+output: html_notebook
+---
+
+```{r}
+# install and load multicastR
+install.packages("multicastR")
+library(multicastR)
+
+# download corpus data
+corpus_data <- multicast()
+
+# exclude not annotated corpora
+corpus_data <- subset(corpus_data, !(corpus %in% c("arta", "persian", "tondano")))
+
+# data structure
+str(corpus_data)
+head(corpus_data)
+
+# count clauses
+clause_counts <- mc_clauses(corpus_data, bytext = TRUE)
+print(clause_counts)
+```
+
+```{r}
+# load dplyr
+library(dplyr)
+
+s <- c("dt_s_ds", "s_cv", "s_ds_cps_cv", "ncs_pc", "s_cp_pc", "s_iv",
+       "ncs", "s_ds_cv", "s_cps", "s_cps_pc", "s_cps_cv", "ncs_cv",
+       "s_ds_cps", "s_cpa_cv", "ncs_cp", "s_ds", "s_in", "s_cpa", 
+       "ncs_in", "ncs_cp_pc", "s_pc", "s_ds_pc", "dt_ncs", "ncs_poss_pc",
+       "ncs_cpa", "ncs_cpa_cv", "s_cpa_pc", "ncs_poss", "s_cp", "ncs_cpa_pc",
+       "s_ling_ds", "s_sv")
+
+a <- c("a_ds", "a_cv", "a_cp_cv", "dt_a",
+        "a_cpa", "a_ds_pc", "a_cps", "a_cv", "a_cpa_in",
+        "a_ling_ds", "a_cp", "a_ds_cp_cv", "a_ds_cps_cv",
+        "a_ling", "a_ds_cv", "a_ds_cps_pc", "a_ds_cp",
+        "a_cps_cv", "a_cps_in", "a_in", "a_ds_cps",
+        "a_cp_cv", "a_cp_pc", "a_pc", "a_cpa_pc", "a_cpa_cv")
+
+p <- c("p_pc", "p2", "dt_p", "dt_p2")
+
+# update 'gfunc' column to unify annotation style
+corpus_data <- corpus_data %>%
+  mutate(gfunc = ifelse(gfunc %in% a, "a", gfunc))
+corpus_data <- corpus_data %>%
+  mutate(gfunc = ifelse(gfunc %in% p, "p", gfunc))
+corpus_data <- corpus_data %>%
+  mutate(gfunc = ifelse(gfunc %in% s, "s", gfunc))
+
+# print updated data
+head(corpus_data)
+```
+
+```{r}
+# split data into clauses
+clauses <- split(corpus_data[c("corpus", "gword", "gfunc", "isnref")], 
+  cumsum(corpus_data$gword %in% c("#")))
+
+# check result
+head(clauses)
+```
+
+```{r}
+# extract corpus values
+corpus_list <- sapply(clauses, function(clause) clause$corpus[1])
+
+# check clause counts in each corpus
+table(corpus_list)
+```
+
+```{r}
+# filter clauses
+filtered_clauses <- clauses[sapply(
+  clauses, 
+  function(corpus_data) {
+    # if a is new
+    a_new <- any(corpus_data$gfunc %in% c("a") 
+                 & corpus_data$isnref == "new")
+    # if p is new
+    p_new <- any(corpus_data$gfunc %in% c("p") 
+                 & corpus_data$isnref == "new")
+    # if a and p present
+    a_and_p <- any(corpus_data$gfunc %in% c("a")) && 
+                    any(corpus_data$gfunc %in% c("p"))
+    # if not a complex clause
+    dependent <- any(corpus_data$gword %in% "%")
+
+    # include clause if a and p are present and if one of them is new
+    xor(a_new, p_new) && a_and_p && !dependent
+  }
+)]
+
+# check result
+head(filtered_clauses)
+```
+
+```{r}
+# extract corpus values
+corpus_list <- sapply(filtered_clauses, function(clause) clause$corpus[1])
+
+# check clause counts in each corpus
+table(corpus_list)
+```
+
+```{r}
+# update 'isnref' column to contain given values
+update_isnref <- function(corpus_data) {
+  # condition to check for empty 'isnref'
+  arg <- corpus_data$gfunc %in% c("a", "p", "s", "g", "dt_g", "l", 
+                                  "dt", "poss", "obl")
+  # update 'isnref' where the condition is true
+  corpus_data$isnref[arg & corpus_data$isnref == ""] <- "given"
+  
+  corpus_data
+}
+# update 'isnfref' in filtered clauses
+filtered_clauses <- lapply(filtered_clauses, update_isnref)
+
+# print result
+head(filtered_clauses)
+```
+
+```{r}
+# calculate word lengths
+word_length <- function(corpus_data) {
+  # extract graphemes from the gword column
+  graphemes_only <- gsub("[^\\p{L}]", "", corpus_data$gword, perl = TRUE)
+  # count number of graphemes in each row
+  length <- nchar(graphemes_only)
+  return(length)
+}
+
+# apply function to each clause
+word_lengths <- lapply(filtered_clauses, word_length)
+
+# calculate clause length
+clause_lengths <- sapply(word_lengths, sum)
+
+# print results
+head(clause_lengths)
+mean(clause_lengths)
+```
+
+```{r}
+# load ggplot2
+library(ggplot2)
+# combine clause lenghts into data frame
+clause_lengths_df <- data.frame(length = clause_lengths)
+# plot histogram of clause lengths
+ggplot(clause_lengths_df, aes(x = length)) +
+  geom_histogram(binwidth = 3, fill = "darkgray", color = "black") +
+  labs(x = "Clause Length", y = "Frequency")
+```
+
+```{r}
+# assign info order value
+order_roles <- function(corpus_data) {
+  # get the indices of info roles
+  given_index <- which(corpus_data$isnref == "given")
+  bridging_index <- which(corpus_data$isnref == "bridging")
+  unused_index <- which(corpus_data$isnref == "unused")
+  new_index <- which(corpus_data$isnref == "new")
+  
+  # combine given roles
+  given_info_index <- c(given_index, bridging_index, unused_index)
+  
+  # compare the minimum index of "new" with the minimum index of "given"
+  if (min(given_info_index) > min(new_index)) {
+    return(1)  # new-before-given
+  }
+  return(0)  # given-before-new
+}
+
+# apply the function to the list of clauses
+info_order <- sapply(filtered_clauses, order_roles)
+
+# print result
+print(sum(info_order))
+
+```
+
+```{r}
+# count occurences of roles
+count_roles <- function(corpus_data, roles, columns) {
+  # initialize condition vector
+  condition <- rep(TRUE, nrow(corpus_data))
+  # combine conditions
+  for (i in seq_along(roles)) {
+    condition <- condition & (corpus_data[[columns[i]]] == roles[i])
+  }
+  sum(condition)
+}
+
+# count roles in every clause
+a_count <- sapply(filtered_clauses,
+  function(corpus_data) count_roles(corpus_data, "a", "gfunc"))
+
+p_count <- sapply(filtered_clauses,
+  function(corpus_data) count_roles(corpus_data, "p", "gfunc"))
+
+a_new_count <- sapply(filtered_clauses,
+  function(corpus_data) 
+  count_roles(corpus_data, c("a", "new"), c("gfunc", "isnref")))
+
+p_new_count <- sapply(filtered_clauses,
+  function(corpus_data) 
+  count_roles(corpus_data, c("p", "new"), c("gfunc", "isnref")))
+
+# dataframe with total counts
+role_count <- data.frame(
+  total_a = sum(a_count),
+  total_a_new = sum(a_new_count),
+  total_p = sum(p_count),
+  total_p_new = sum(p_new_count)
+)
+print(role_count)
+
+# check if there are any clauses with more than one new a
+if (any(a_new_count > 1)) {
+  print(a_new_count)
+} else {
+  print("There are no clauses with more than one new agent.")
+}
+```
+
+```{r}
+# extract language data
+corpus_values <- sapply(filtered_clauses,
+  function(corpus_data) unique(corpus_data$corpus))
+
+# combine all values into data frame
+combined_data <- data.frame(
+  corpus = corpus_values,
+  info_role = a_new_count,
+  info_order = info_order,
+  clause_length = clause_lengths
+)
+
+head(combined_data)
+```
+
+```{r}
+# create new grouping variable
+combined_data$group <- interaction(combined_data$info_role, combined_data$info_order)
+
+# create the plot
+ggplot(combined_data, aes(y = group, x = clause_length, fill = group)) + 
+  geom_violin(aes(fill = group), color = NA) + 
+  geom_boxplot(width = 0.1, aes(fill = group), color = "grey15", position = position_dodge(0.9), 
+               outliers = FALSE, outlier.shape = ) +
+  theme_minimal(base_size = 11) + 
+  labs(x = "Clause length",
+       y = "") +
+  scale_fill_manual(values = c("0.0" = "lightgray", "0.1" = "lightblue", 
+                               "1.0" = "lightgray", "1.1" = "lightblue")) +
+  scale_y_discrete(labels = c("GBN + P new \n n = 656", "GBN + A new \n n = 14", "NBG + P new \n n = 28", "NBG + A new \n n = 51")) +
+  scale_x_continuous(breaks = seq(0, max(combined_data$clause_length), by = 5)) + 
+  theme(legend.position = "none") +
+  theme(aspect.ratio = 0.5) +
+  theme(axis.title.x = element_text(size = 9, vjust = -1.5))
+```
+
+```{r}
+# install and load lme4
+install.packages("lme4", type = "source")
+library(lme4)
+library(Matrix)
+```
+
+```{r}
+# glmm with random intercept
+model = glmer.nb(clause_length ~ info_order * info_role + (1|corpus), data=combined_data)
+summary(model)
+```
+
+```{r}
+# glmm with random slope
+model_random_slope = glmer.nb(clause_length ~ info_order * info_role + (info_order|corpus), data=combined_data)
+summary(model_random_slope)
+```
+
+```{r}
+# random slope
+ran <- ranef(model_random_slope)$corpus
+print(ran)
+```
+
+```{r}
+# retrieve confidence interval
+confint(model)
+```
+
+```{r}
+# install and load MuMIn
+install.packages("MuMIn")
+library(MuMIn)
+
+# calculate r-squared values
+r.squared <- r.squaredGLMM(model_nb)
+print(r.squared)
+```
+
+```{r}
+# get model predictions
+predictions <- exp(predict(model_nb))
+combined_data$predictions <- predictions
+head(combined_data)
+```
+
+```{r}
+# plot distributions of actual and predicted values
+ggplot(combined_data, aes(x = clause_length, fill = group)) +
+  geom_histogram(binwidth = 5, color = NA, position = "identity", alpha = 0.6) +
+  geom_line(data = combined_data, aes(x = predictions, y = ..count.., group = group), stat = "bin", binwidth = 1, color = "black", size = 0.5) +
+  facet_wrap(~ group, scales = "free_y", 
+             labeller = labeller(group = c("0.0" = "GBN + P new \n n = 656", "0.1" = "GBN + A new \n n = 14", 
+                                           "1.0" = "NBG + P new \n n = 28", "1.1" = "NBG + A new \n n = 51"))) +
+  theme_minimal() +
+  labs(
+    x = "Clause length",
+    y = "Count"
+  ) +
+  scale_fill_manual(values = c("0.0" = "lightblue", "0.1" = "lightblue", "1.0" = "lightgrey", "1.1" = "lightgrey")) +
+  theme(axis.title.x = element_text(size = 9, vjust = -1.5)) +
+  theme(axis.title.y = element_text(size = 9)) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "none"
+  )
+```
+
+```{r}
+# calculate median and IQR by group
+summary_stats <- combined_data %>%
+  group_by(group) %>%
+  summarise(
+    median = median(clause_length),
+    q1 = quantile(clause_length, 0.25),
+    q3 = quantile(clause_length, 0.75),
+    iqr = IQR(clause_length)
+  )
+# print result
+print(summary_stats)
+```
